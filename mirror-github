@@ -1,0 +1,52 @@
+#!/bin/sh
+
+set -x
+set -e
+
+DESTINATION=${DESTINATION:-/home/david/src}
+GITHUB_USER=${GITHUB_USER:-dgoffredo}
+GITHUB_TOKEN=${GITHUB_TOKEN:-$(cat /home/david/.github.bot.token)}
+
+WORKDIR=$(mktemp -d)
+cd "$WORKDIR"
+trap 'echo "workdir: $WORKDIR"' EXIT
+
+fetch_json_page() {
+    curl --silent \
+    curl -H 'Accept: application/vnd.github+json' \
+         -H 'X-GitHub-Api-Version: 2022-11-28' \
+         -H "Authorization: Bearer $GITHUB_TOKEN" \
+         "https://api.github.com/users/$GITHUB_USER/repos?per_page=100&page=$1"
+}
+
+file_size_bytes() {
+    stat --printf=%s "$1"
+}
+
+touch remotes
+old_size=$(file_size_bytes remotes)
+page=1
+while true; do
+    fetch_json_page "$page" >page.json
+    <page.json jq --raw-output '.[] | .ssh_url' >>remotes
+    new_size=$(file_size_bytes remotes)
+    if [ "$new_size" -eq "$old_size" ]; then
+        break
+    fi
+    old_size=$new_size
+    page=$((page + 1))
+    sleep 1 # Don't burn through rate limit if something's wrong.
+done
+
+cd "$DESTINATION"
+
+while read -r git_remote; do
+    dir=$(basename ${git_remote%.git})
+    if ! [ -d "$dir" ]; then
+        git clone "$git_remote"
+    else
+        cd "$dir"
+        git fetch
+        cd "$DESTINATION"
+    fi
+done <"$WORKDIR/remotes"
